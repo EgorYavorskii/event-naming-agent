@@ -111,32 +111,36 @@ if "parsed" in st.session_state:
 if "questions" in st.session_state:
     questions = st.session_state.questions
     if questions.status == "blocked":
-        st.error(questions.blocked_reason)
-    elif not questions.questions:
+        st.warning(questions.blocked_reason or "В требованиях есть критическая неопределённость. Можно уточнить её ниже или сразу вынести в риски.")
+    if not questions.questions:
         st.info("Обязательных уточнений не найдено.")
     else:
-        st.info("Ответьте на вопросы. Если решения нет, оставьте неопределённость в рисках.")
+        st.info("Можно ответить на вопросы ниже или сразу сформировать черновик. Пропущенные ответы попадут в раздел «Риски».")
         with st.form("answers_form"):
             answers = {}
-            for question in questions.questions:
+            for question in questions.questions[:3]:
                 st.markdown(f"**{question.requirement_id or 'Общий вопрос'} — {question.question}**")
                 if question.reason:
                     st.caption(question.reason)
-                options = question.options + (["Не знаю — вынести в риски"] if "Не знаю — вынести в риски" not in question.options else [])
-                selected = st.selectbox("Ответ", options=["Выберите ответ"] + options + ["Другой ответ"], key=f"choice_{question.id}", label_visibility="collapsed")
-                custom = st.text_input("Свой ответ", key=f"custom_{question.id}") if selected == "Другой ответ" else ""
-                answers[question.id] = custom or selected
-            if st.form_submit_button("Сохранить ответы", use_container_width=True):
-                st.session_state.answers = {key: ("Не знаю — вынести в риски" if value == "Выберите ответ" else value) for key, value in answers.items()}
-                st.success("Ответы сохранены.")
+                if question.options:
+                    st.caption("Возможные варианты: " + " · ".join(question.options))
+                answers[question.id] = st.text_input(
+                    "Ваш ответ",
+                    placeholder="Можно оставить пустым — вопрос попадёт в риски",
+                    key=f"answer_{question.id}",
+                )
+            if st.form_submit_button("Сохранить ответы и продолжить", use_container_width=True):
+                st.session_state.answers = {
+                    key: (value.strip() or "Не знаю — вынести в риски")
+                    for key, value in answers.items()
+                }
+                st.success("Ответы сохранены. Теперь можно сформировать черновик.")
 
 if "parsed" in st.session_state and st.session_state.parsed["report"].ok:
     st.subheader("3. Черновик разметки")
     if st.button("Сформировать черновик", type="primary", use_container_width=True):
         if not secret("OPENROUTER_API_KEY"):
             st.error("Не настроен OPENROUTER_API_KEY.")
-        elif "questions" in st.session_state and st.session_state.questions.questions and "answers" not in st.session_state:
-            st.error("Сначала сохраните ответы на уточняющие вопросы.")
         else:
             parsed = st.session_state.parsed
             answers_text = json.dumps(st.session_state.get("answers", {}), ensure_ascii=False, indent=2)
