@@ -38,6 +38,7 @@ image_description = ""
 ASSETS_DIR = Path(__file__).parent / "assets"
 REGULATION_TEXT = (ASSETS_DIR / "regulation.md").read_text(encoding="utf-8")
 TEMPLATE_BYTES = (ASSETS_DIR / "tracking_plan_template.xlsx").read_bytes()
+EMBEDDED_CATALOG = parse_catalog(ASSETS_DIR / "existing_events_catalog.xlsx")
 
 with st.sidebar:
     st.subheader("О прототипе")
@@ -56,21 +57,18 @@ with right:
     product = st.text_input("Код Product", placeholder="Только утверждённый код")
 
 bt_file = st.file_uploader("Бизнес-требования *", type=["pdf", "docx"], on_change=reset_after_files)
-catalog_file = st.file_uploader("Актуальный каталог существующих событий *", type=["xlsx", "csv"], on_change=reset_after_files)
-st.caption("Регламент нейминга и шаблон итогового XLSX уже встроены в приложение.")
+st.caption("Регламент нейминга, синтетический каталог существующих событий и шаблон итогового XLSX уже встроены в приложение.")
 
 if st.button("Проверить файлы", type="primary", use_container_width=True):
-    missing = [label for value, label in ((bt_file, "БТ"), (catalog_file, "каталог событий")) if value is None]
-    if missing:
-        st.error("Загрузите обязательные файлы: " + ", ".join(missing))
+    if bt_file is None:
+        st.error("Загрузите обязательный файл: БТ")
     elif not feature.strip():
         st.error("Укажите название фичи.")
     else:
         try:
             bt = parse_text_document(bt_file)
-            catalog = parse_catalog(catalog_file)
-            report = validate_inputs(bt.text, REGULATION_TEXT, catalog.dataframe)
-            st.session_state.parsed = {"bt": bt, "regulation_text": REGULATION_TEXT, "catalog": catalog, "report": report}
+            report = validate_inputs(bt.text, REGULATION_TEXT, EMBEDDED_CATALOG.dataframe)
+            st.session_state.parsed = {"bt": bt, "regulation_text": REGULATION_TEXT, "catalog": EMBEDDED_CATALOG, "report": report}
             st.session_state.pop("questions", None)
             st.session_state.pop("result", None)
         except Exception as exc:
@@ -83,11 +81,11 @@ if "parsed" in st.session_state:
         for error in report.blocking_errors:
             st.error(error)
     else:
-        st.success("Обязательные файлы читаются. Можно переходить к анализу требований.")
+        st.success("БТ читается, встроенные материалы подключены. Можно переходить к анализу требований.")
     for warning in parsed["bt"].warnings + parsed["catalog"].warnings + report.warnings:
         st.warning(warning)
     with st.expander("Что распознано"):
-        st.write({"Символов в БТ": len(parsed["bt"].text), "Символов во встроенном регламенте": len(parsed["regulation_text"]), "Строк в каталоге": len(parsed["catalog"].dataframe), "Изображений в БТ": len(parsed["bt"].images)})
+        st.write({"Символов в БТ": len(parsed["bt"].text), "Символов во встроенном регламенте": len(parsed["regulation_text"]), "Строк во встроенном каталоге": len(parsed["catalog"].dataframe), "Изображений в БТ": len(parsed["bt"].images)})
     if parsed["bt"].images:
         image_description = st.text_area(
             "Описание информации со скриншотов",
