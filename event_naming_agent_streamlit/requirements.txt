@@ -1,0 +1,10 @@
+streamlit>=1.40,<2
+requests>=2.32,<3
+pydantic>=2.9,<3
+python-docx>=1.1,<2
+pypdf>=5,<7
+openpyxl>=3.1,<4
+pandas>=2.2,<3
+Pillow>=10.4,<13
+pytest>=8.3,<10
+
