@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -34,6 +35,9 @@ st.title("Агент нейминга продуктовых событий")
 st.caption("Черновая разметка по БТ и регламенту · результат требует проверки системного аналитика")
 st.warning("Используйте только синтетические или обезличенные учебные данные. Приложение ничего не отправляет в Jira и не согласовывает события автоматически.")
 image_description = ""
+ASSETS_DIR = Path(__file__).parent / "assets"
+REGULATION_TEXT = (ASSETS_DIR / "regulation.md").read_text(encoding="utf-8")
+TEMPLATE_BYTES = (ASSETS_DIR / "tracking_plan_template.xlsx").read_bytes()
 
 with st.sidebar:
     st.subheader("О прототипе")
@@ -52,11 +56,11 @@ with right:
     product = st.text_input("Код Product", placeholder="Только утверждённый код")
 
 bt_file = st.file_uploader("Бизнес-требования *", type=["pdf", "docx"], on_change=reset_after_files)
-regulation_file = st.file_uploader("Регламент нейминга *", type=["pdf", "docx", "txt"], on_change=reset_after_files)
-catalog_file = st.file_uploader("Актуальный каталог событий *", type=["xlsx", "csv"], on_change=reset_after_files)
+catalog_file = st.file_uploader("Актуальный каталог существующих событий *", type=["xlsx", "csv"], on_change=reset_after_files)
+st.caption("Регламент нейминга и шаблон итогового XLSX уже встроены в приложение.")
 
 if st.button("Проверить файлы", type="primary", use_container_width=True):
-    missing = [label for value, label in ((bt_file, "БТ"), (regulation_file, "регламент"), (catalog_file, "каталог событий")) if value is None]
+    missing = [label for value, label in ((bt_file, "БТ"), (catalog_file, "каталог событий")) if value is None]
     if missing:
         st.error("Загрузите обязательные файлы: " + ", ".join(missing))
     elif not feature.strip():
@@ -64,10 +68,9 @@ if st.button("Проверить файлы", type="primary", use_container_widt
     else:
         try:
             bt = parse_text_document(bt_file)
-            regulation = parse_text_document(regulation_file)
             catalog = parse_catalog(catalog_file)
-            report = validate_inputs(bt.text, regulation.text, catalog.dataframe)
-            st.session_state.parsed = {"bt": bt, "regulation": regulation, "catalog": catalog, "report": report}
+            report = validate_inputs(bt.text, REGULATION_TEXT, catalog.dataframe)
+            st.session_state.parsed = {"bt": bt, "regulation_text": REGULATION_TEXT, "catalog": catalog, "report": report}
             st.session_state.pop("questions", None)
             st.session_state.pop("result", None)
         except Exception as exc:
@@ -81,10 +84,10 @@ if "parsed" in st.session_state:
             st.error(error)
     else:
         st.success("Обязательные файлы читаются. Можно переходить к анализу требований.")
-    for warning in parsed["bt"].warnings + parsed["regulation"].warnings + parsed["catalog"].warnings + report.warnings:
+    for warning in parsed["bt"].warnings + parsed["catalog"].warnings + report.warnings:
         st.warning(warning)
     with st.expander("Что распознано"):
-        st.write({"Символов в БТ": len(parsed["bt"].text), "Символов в регламенте": len(parsed["regulation"].text), "Строк в каталоге": len(parsed["catalog"].dataframe), "Изображений в БТ": len(parsed["bt"].images)})
+        st.write({"Символов в БТ": len(parsed["bt"].text), "Символов во встроенном регламенте": len(parsed["regulation_text"]), "Строк в каталоге": len(parsed["catalog"].dataframe), "Изображений в БТ": len(parsed["bt"].images)})
     if parsed["bt"].images:
         image_description = st.text_area(
             "Описание информации со скриншотов",
@@ -99,7 +102,7 @@ if "parsed" in st.session_state:
             st.error("Не настроен OPENROUTER_API_KEY. Добавьте ключ в Secrets приложения.")
         else:
             bt_for_model = parsed["bt"].text + ("\n\nОПИСАНИЕ СКРИНШОТОВ ОТ АНАЛИТИКА:\n" + image_description if image_description.strip() else "")
-            prompt = build_questions_prompt(feature, product, bt_for_model, parsed["regulation"].text, catalog_as_text(parsed["catalog"]))
+            prompt = build_questions_prompt(feature, product, bt_for_model, parsed["regulation_text"], catalog_as_text(parsed["catalog"]))
             try:
                 with st.spinner("Ищу неоднозначности и неполные требования..."):
                     raw = call_openrouter(api_key=api_key, model=model, system_prompt=SYSTEM_PROMPT, user_prompt=prompt, schema=QUESTIONS_JSON_SCHEMA)
@@ -141,7 +144,7 @@ if "parsed" in st.session_state and st.session_state.parsed["report"].ok:
             answers_text = json.dumps(st.session_state.get("answers", {}), ensure_ascii=False, indent=2)
             image_description = st.session_state.get("image_description", "")
             bt_for_model = parsed["bt"].text + ("\n\nОПИСАНИЕ СКРИНШОТОВ ОТ АНАЛИТИКА:\n" + image_description if image_description.strip() else "")
-            prompt = build_generation_prompt(feature, product, bt_for_model, parsed["regulation"].text, catalog_as_text(parsed["catalog"]), answers_text)
+            prompt = build_generation_prompt(feature, product, bt_for_model, parsed["regulation_text"], catalog_as_text(parsed["catalog"]), answers_text)
             try:
                 with st.spinner("Формирую черновую разметку и проверяю её..."):
                     raw = call_openrouter(api_key=secret("OPENROUTER_API_KEY"), model=secret("OPENROUTER_MODEL", "openrouter/free"), system_prompt=SYSTEM_PROMPT, user_prompt=prompt, schema=RESULT_JSON_SCHEMA)
@@ -150,12 +153,7 @@ if "parsed" in st.session_state and st.session_state.parsed["report"].ok:
                         st.error(result.blocked_reason)
                     else:
                         result = validate_agent_result(result, parsed["catalog"].dataframe)
-                        template = parsed["catalog"].workbook_bytes if parsed["catalog"].workbook_bytes else None
-                        try:
-                            xlsx = build_workbook(result, template)
-                        except ValueError:
-                            xlsx = build_workbook(result)
-                            st.warning("Каталог не совпал со структурой выходного шаблона; создан безопасный встроенный шаблон. Перед защитой приложите фактический XLSX-шаблон.")
+                        xlsx = build_workbook(result, TEMPLATE_BYTES)
                         st.session_state.result = result
                         st.session_state.xlsx = xlsx
             except (OpenRouterError, ValidationError) as exc:

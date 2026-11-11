@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from .schemas import AgentResponse
 
 
-EVENT_HEADERS = ["№", "Event name", "Product", "Screen", "Object", "Action", "Trigger", "Dimensions", "Проверка"]
+EVENT_HEADERS = ["№", "Event name\n(имя события)", "Product", "Screen", "Object", "Action", "Trigger\n(когда и почему отправляется)", "Dimensions\n(одной строкой)", "Проверка"]
 RISK_HEADERS = ["№", "Строка БТ", "Тип", "Суть проблемы", "Вариант агента", "У кого уточнить", "Решение аналитика"]
 YELLOW_FILL = PatternFill("solid", fgColor="FFF2CC")
 RED_FILL = PatternFill("solid", fgColor="F4CCCC")
@@ -31,13 +31,34 @@ def _ensure_sheet(workbook: Workbook, name: str, headers: list[str]):
     return sheet
 
 
+def _prepare_embedded_template(workbook: Workbook):
+    if set(workbook.sheetnames) != {"Events", "Риски"}:
+        raise ValueError("Встроенный шаблон должен содержать листы Events и Риски")
+    events = workbook["Events"]
+    actual = [events.cell(1, i).value for i in range(1, 10)]
+    if actual != EVENT_HEADERS:
+        raise ValueError(f"Заголовки встроенного шаблона изменились: {actual}")
+    if events.max_row < 200:
+        raise ValueError("Во встроенном шаблоне должно быть 200 подготовленных строк")
+    risks = workbook["Риски"]
+    if risks.max_row == 1 and risks["A1"].value is None:
+        for i, header in enumerate(RISK_HEADERS, 1):
+            risks.cell(1, i, header)
+    else:
+        actual_risks = [risks.cell(1, i).value for i in range(1, len(RISK_HEADERS) + 1)]
+        if actual_risks != RISK_HEADERS:
+            raise ValueError(f"Заголовки листа Риски изменились: {actual_risks}")
+    return events, risks
+
+
 def _clear_data(sheet) -> None:
     if sheet.max_row > 1:
         sheet.delete_rows(2, sheet.max_row - 1)
 
 
 def _format_sheet(sheet) -> None:
-    sheet.freeze_panes = "A2"
+    if not sheet.freeze_panes:
+        sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="18191B")
@@ -54,22 +75,39 @@ def _format_sheet(sheet) -> None:
 def build_workbook(result: AgentResponse, template_bytes: bytes | None = None) -> bytes:
     if template_bytes:
         workbook = load_workbook(io.BytesIO(template_bytes))
+        events_sheet, risks_sheet = _prepare_embedded_template(workbook)
     else:
         workbook = Workbook()
         workbook.active.title = "Events"
-    events_sheet = _ensure_sheet(workbook, "Events", EVENT_HEADERS)
-    risks_sheet = _ensure_sheet(workbook, "Риски", RISK_HEADERS)
+        events_sheet = _ensure_sheet(workbook, "Events", EVENT_HEADERS)
+        risks_sheet = _ensure_sheet(workbook, "Риски", RISK_HEADERS)
     for sheet_name in list(workbook.sheetnames):
         if sheet_name not in {"Events", "Риски"}:
             del workbook[sheet_name]
-    _clear_data(events_sheet)
-    _clear_data(risks_sheet)
+    if template_bytes:
+        for row in range(2, events_sheet.max_row + 1):
+            for column in range(3, 9):
+                events_sheet.cell(row, column).value = None
+        _clear_data(risks_sheet)
+    else:
+        _clear_data(events_sheet)
+        _clear_data(risks_sheet)
 
     for index, event in enumerate(result.events, 1):
-        values = [index, event.event_name, event.product, event.screen, event.object, event.action, event.trigger, event.dimensions, event.check]
-        events_sheet.append(values)
+        if template_bytes:
+            row = index + 1
+            if row > events_sheet.max_row:
+                raise ValueError("В шаблоне недостаточно строк для результата")
+            values = [event.product, event.screen, event.object, event.action, event.trigger, event.dimensions]
+            for column, value in enumerate(values, 3):
+                events_sheet.cell(row, column).value = value
+            target_row = row
+        else:
+            values = [index, event.event_name, event.product, event.screen, event.object, event.action, event.trigger, event.dimensions, event.check]
+            events_sheet.append(values)
+            target_row = events_sheet.max_row
         if event.check != "OK":
-            for cell in events_sheet[events_sheet.max_row]:
+            for cell in events_sheet[target_row]:
                 cell.fill = YELLOW_FILL
 
     for risk in result.risks:
@@ -77,8 +115,13 @@ def build_workbook(result: AgentResponse, template_bytes: bytes | None = None) -
         for cell in risks_sheet[risks_sheet.max_row]:
             cell.fill = RED_FILL if risk.type == "Расхождение с регламентом" else YELLOW_FILL
 
-    for sheet in (events_sheet, risks_sheet):
-        _format_sheet(sheet)
+    if template_bytes:
+        _format_sheet(risks_sheet)
+    else:
+        for sheet in (events_sheet, risks_sheet):
+            _format_sheet(sheet)
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
