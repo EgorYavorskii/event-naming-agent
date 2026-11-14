@@ -18,6 +18,11 @@ from src.validators import validate_agent_result, validate_inputs
 
 st.set_page_config(page_title="Агент нейминга событий", page_icon="🧭", layout="wide")
 
+ASSETS_DIR = Path(__file__).parent / "assets"
+DEFAULT_REGULATION_TEXT = (ASSETS_DIR / "regulation.md").read_text(encoding="utf-8")
+TEMPLATE_BYTES = (ASSETS_DIR / "tracking_plan_template.xlsx").read_bytes()
+EMBEDDED_CATALOG = parse_catalog(ASSETS_DIR / "existing_events_catalog.xlsx")
+
 
 def secret(name: str, default: str = "") -> str:
     try:
@@ -26,19 +31,38 @@ def secret(name: str, default: str = "") -> str:
         return os.getenv(name, default)
 
 
-def reset_after_files() -> None:
+def reset_analysis() -> None:
     for key in ("parsed", "questions", "answers", "result", "xlsx"):
         st.session_state.pop(key, None)
+
+
+def apply_regulation() -> None:
+    edited_text = st.session_state.get("regulation_editor", "").strip()
+    if not edited_text:
+        st.session_state.regulation_notice = ("error", "Регламент не может быть пустым.")
+        return
+    st.session_state.regulation_text = edited_text
+    st.session_state.regulation_notice = ("success", "Изменения регламента применены к текущему запуску.")
+    reset_analysis()
+
+
+def restore_regulation() -> None:
+    st.session_state.regulation_editor = DEFAULT_REGULATION_TEXT
+    st.session_state.regulation_text = DEFAULT_REGULATION_TEXT
+    st.session_state.regulation_notice = ("success", "Восстановлена встроенная версия регламента.")
+    reset_analysis()
+
+
+if "regulation_text" not in st.session_state:
+    st.session_state.regulation_text = DEFAULT_REGULATION_TEXT
+if "regulation_editor" not in st.session_state:
+    st.session_state.regulation_editor = st.session_state.regulation_text
 
 
 st.title("Агент нейминга продуктовых событий")
 st.caption("Черновая разметка по БТ и регламенту · результат требует проверки системного аналитика")
 st.warning("Используйте только синтетические или обезличенные учебные данные. Приложение ничего не отправляет в Jira и не согласовывает события автоматически.")
 image_description = ""
-ASSETS_DIR = Path(__file__).parent / "assets"
-REGULATION_TEXT = (ASSETS_DIR / "regulation.md").read_text(encoding="utf-8")
-TEMPLATE_BYTES = (ASSETS_DIR / "tracking_plan_template.xlsx").read_bytes()
-EMBEDDED_CATALOG = parse_catalog(ASSETS_DIR / "existing_events_catalog.xlsx")
 
 with st.sidebar:
     st.subheader("О прототипе")
@@ -49,15 +73,38 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-st.subheader("1. Данные запуска")
+st.subheader("1. Регламент разметки")
+with st.expander("Открыть и отредактировать регламент"):
+    st.caption("Изменения действуют только в текущей пользовательской сессии и будут переданы модели при следующем анализе.")
+    with st.form("regulation_form"):
+        st.text_area(
+            "Текст регламента",
+            key="regulation_editor",
+            height=420,
+            help="Отредактируйте правила и нажмите «Применить изменения». После изменения нужно заново проверить БТ.",
+        )
+        apply_column, restore_column = st.columns(2)
+        with apply_column:
+            st.form_submit_button("Применить изменения", type="primary", use_container_width=True, on_click=apply_regulation)
+        with restore_column:
+            st.form_submit_button("Вернуть встроенную версию", use_container_width=True, on_click=restore_regulation)
+
+if "regulation_notice" in st.session_state:
+    notice_type, notice_text = st.session_state.pop("regulation_notice")
+    if notice_type == "error":
+        st.error(notice_text)
+    else:
+        st.success(notice_text)
+
+st.subheader("2. Данные запуска")
 left, right = st.columns(2)
 with left:
     feature = st.text_input("Название фичи *", placeholder="Оформление кредита")
 with right:
     product = st.text_input("Код Product", placeholder="Только утверждённый код")
 
-bt_file = st.file_uploader("Бизнес-требования *", type=["pdf", "docx"], on_change=reset_after_files)
-st.caption("Регламент нейминга, синтетический каталог существующих событий и шаблон итогового XLSX уже встроены в приложение.")
+bt_file = st.file_uploader("Бизнес-требования *", type=["pdf", "docx"], on_change=reset_analysis)
+st.caption("Регламент предзаполнен и доступен для редактирования выше. Синтетический каталог и шаблон итогового XLSX встроены в приложение.")
 
 if st.button("Проверить файлы", type="primary", use_container_width=True):
     if bt_file is None:
@@ -67,8 +114,9 @@ if st.button("Проверить файлы", type="primary", use_container_widt
     else:
         try:
             bt = parse_text_document(bt_file)
-            report = validate_inputs(bt.text, REGULATION_TEXT, EMBEDDED_CATALOG.dataframe)
-            st.session_state.parsed = {"bt": bt, "regulation_text": REGULATION_TEXT, "catalog": EMBEDDED_CATALOG, "report": report}
+            active_regulation = st.session_state.regulation_text
+            report = validate_inputs(bt.text, active_regulation, EMBEDDED_CATALOG.dataframe)
+            st.session_state.parsed = {"bt": bt, "regulation_text": active_regulation, "catalog": EMBEDDED_CATALOG, "report": report}
             st.session_state.pop("questions", None)
             st.session_state.pop("result", None)
         except Exception as exc:
@@ -85,7 +133,7 @@ if "parsed" in st.session_state:
     for warning in parsed["bt"].warnings + parsed["catalog"].warnings + report.warnings:
         st.warning(warning)
     with st.expander("Что распознано"):
-        st.write({"Символов в БТ": len(parsed["bt"].text), "Символов во встроенном регламенте": len(parsed["regulation_text"]), "Строк во встроенном каталоге": len(parsed["catalog"].dataframe), "Изображений в БТ": len(parsed["bt"].images)})
+        st.write({"Символов в БТ": len(parsed["bt"].text), "Символов в активном регламенте": len(parsed["regulation_text"]), "Строк во встроенном каталоге": len(parsed["catalog"].dataframe), "Изображений в БТ": len(parsed["bt"].images)})
     if parsed["bt"].images:
         image_description = st.text_area(
             "Описание информации со скриншотов",
@@ -93,7 +141,7 @@ if "parsed" in st.session_state:
             key="image_description",
         )
 
-    st.subheader("2. Уточняющие вопросы")
+    st.subheader("3. Уточняющие вопросы")
     api_key = secret("OPENROUTER_API_KEY")
     if st.button("Проанализировать требования", disabled=not report.ok, use_container_width=True):
         if not api_key:
@@ -137,7 +185,7 @@ if "questions" in st.session_state:
                 st.success("Ответы сохранены. Теперь можно сформировать черновик.")
 
 if "parsed" in st.session_state and st.session_state.parsed["report"].ok:
-    st.subheader("3. Черновик разметки")
+    st.subheader("4. Черновик разметки")
     if st.button("Сформировать черновик", type="primary", use_container_width=True):
         if not secret("OPENROUTER_API_KEY"):
             st.error("Не настроен OPENROUTER_API_KEY.")
