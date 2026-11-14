@@ -74,20 +74,29 @@ with st.sidebar:
         st.rerun()
 
 st.subheader("1. Регламент разметки")
-with st.expander("Открыть и отредактировать регламент"):
-    st.caption("Изменения действуют только в текущей пользовательской сессии и будут переданы модели при следующем анализе.")
-    with st.form("regulation_form"):
-        st.text_area(
-            "Текст регламента",
-            key="regulation_editor",
-            height=420,
-            help="Отредактируйте правила и нажмите «Применить изменения». После изменения нужно заново проверить БТ.",
-        )
-        apply_column, restore_column = st.columns(2)
-        with apply_column:
-            st.form_submit_button("Применить изменения", type="primary", use_container_width=True, on_click=apply_regulation)
-        with restore_column:
-            st.form_submit_button("Вернуть встроенную версию", use_container_width=True, on_click=restore_regulation)
+with st.expander("Посмотреть или изменить регламент"):
+    preview_tab, edit_tab = st.tabs(["Просмотр", "Редактирование"])
+
+    with preview_tab:
+        st.markdown(st.session_state.regulation_text)
+        st.caption("Это активная версия регламента, которая будет использована при анализе требований.")
+
+    with edit_tab:
+        st.caption("Здесь показывается исходный текст в формате Markdown. После сохранения заголовки, списки и выделение будут оформлены во вкладке «Просмотр».")
+        with st.form("regulation_form"):
+            st.text_area(
+                "Исходный текст регламента",
+                key="regulation_editor",
+                height=520,
+                help="Отредактируйте правила и нажмите «Применить изменения». После изменения нужно заново проверить БТ.",
+            )
+            apply_column, restore_column = st.columns(2)
+            with apply_column:
+                st.form_submit_button("Применить изменения", type="primary", use_container_width=True, on_click=apply_regulation)
+            with restore_column:
+                st.form_submit_button("Вернуть встроенную версию", use_container_width=True, on_click=restore_regulation)
+
+        st.caption("Изменения действуют только в текущей пользовательской сессии.")
 
 if "regulation_notice" in st.session_state:
     notice_type, notice_text = st.session_state.pop("regulation_notice")
